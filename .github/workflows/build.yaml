@@ -1,0 +1,79 @@
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_name:
+        required: true
+      package_version:
+        required: true
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.set-tag.outputs.tag }}
+    steps:
+      - name: set tag
+        id: set-tag
+        run: |
+          TAG="${{ github.event.inputs.package_name }}/${{ github.event.inputs.package_version }}"
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+  linux:
+    runs-on: ubuntu-latest
+    # if: contains(inputs.platforms, 'linux')
+
+    defaults:
+      run:
+        working-directory: pkgs/${{ github.event.inputs.package_name }}
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: setup
+        run: ./setup.sh
+        env:
+          version: ${{ github.event.inputs.package_version }}
+
+      - name: build
+        run: ./build.sh
+        env:
+          version: ${{ github.event.inputs.package_version }}
+
+      - name: copy to build path
+        run: |
+          cp build -r ${{ github.workspace }}/build
+
+      - name: upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: ./build/**
+          retention-days: 1
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [setup, linux]
+    permissions:
+      contents: write
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "build ${{ needs.setup.outputs.tag }} at ${date}" > notes.md
+          gh release delete --yes --cleanup-tag ${{ needs.setup.outputs.tag }} || true
+          gh release create "${{ needs.setup.outputs.tag }}" \
+            --target main \
+            --title "${{ needs.setup.outputs.tag }}" \
+            --notes-file notes.md linux/*
